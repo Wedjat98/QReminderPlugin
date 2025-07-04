@@ -119,9 +119,51 @@ class ReminderPlugin(BasePlugin):
             # 获取目标信息
             target_info = {
                 "target_id": str(query.launcher_id),
-                "sender_id": str(query.sender_id), 
+                "sender_id": str(query.sender_id),
                 "target_type": str(query.launcher_type).split(".")[-1].lower(),
             }
+            
+            # 从消息链中提取被@用户的ID
+            at_targets = []
+            if query.message_chain:
+                for component in query.message_chain:
+                    if isinstance(component, platform_types.message.At):
+                        at_targets.append(component.target)
+                        self.ap.logger.debug(f"找到@目标: {component.target}")
+            
+            # 获取机器人自己的微信ID，避免@机器人自己
+            bot_id = None
+            try:
+                # 尝试从适配器获取机器人微信ID
+                adapter = await self._get_available_adapter()
+                if adapter:
+                    # 优先使用config中的wxid（真正的微信ID）
+                    if hasattr(adapter, 'config') and 'wxid' in adapter.config:
+                        bot_id = adapter.config['wxid']
+                    # 备用方案：使用bot_account_id（可能是昵称）
+                    elif hasattr(adapter, 'bot_account_id'):
+                        bot_id = adapter.bot_account_id
+                    self.ap.logger.debug(f"获取到机器人微信ID: {bot_id}")
+            except Exception as e:
+                self.ap.logger.warning(f"获取机器人微信ID失败: {e}")
+            
+            # 只从消息链中获取@用户作为提醒目标，但要避免@机器人自己
+            self.ap.logger.debug(f"原始target_info: {target_info}")
+            self.ap.logger.info(f"at_targets: {at_targets}, bot_id: {bot_id}")
+            
+            # 过滤掉机器人自己的ID
+            valid_at_targets = [target for target in at_targets if target != bot_id] if bot_id else at_targets
+            self.ap.logger.info(f"有效at_targets: {valid_at_targets}")
+            if valid_at_targets:
+                # 如果有有效的@信息，使用第一个@的用户ID作为提醒目标
+                target_info["sender_id"] = valid_at_targets[0]
+                self.ap.logger.info(f"设置提醒目标为被@用户: {valid_at_targets[0]}")
+            elif at_targets and bot_id and at_targets[0] == bot_id:
+                # 如果只@了机器人自己，则提醒发送消息的用户
+                self.ap.logger.info(f"用户@了机器人自己，提醒目标设为发送者: {target_info['sender_id']}")
+            # 如果没有@任何人，默认提醒发送消息的用户自己
+            
+            self.ap.logger.debug(f"最终target_info: {target_info}")
             
             self.ap.logger.debug(f"解析时间描述: '{time_description}'")
             
@@ -581,6 +623,7 @@ class ReminderPlugin(BasePlugin):
             # 构建消息链
             if reminder_data['target_type'] == 'group':
                 # 群聊中@用户
+                self.ap.logger.debug(f"构建群聊提醒消息，@用户ID: {reminder_data['sender_id']}")
                 message_chain = platform_types.MessageChain([
                     platform_types.At(reminder_data['sender_id']),
                     platform_types.Plain(f" {message_content}")
@@ -592,7 +635,7 @@ class ReminderPlugin(BasePlugin):
                 ])
             
             # 记录详细信息用于调试
-            self.ap.logger.debug(f"准备发送消息: target_type={reminder_data['target_type']}, target_id={reminder_data['target_id']}")
+            self.ap.logger.debug(f"准备发送消息: target_type={reminder_data['target_type']}, target_id={reminder_data['target_id']}, sender_id={reminder_data['sender_id']}")
             
             # 使用 host.send_active_message 方法
             try:
